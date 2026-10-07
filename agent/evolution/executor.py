@@ -527,12 +527,22 @@ def run_evolution_for_session(
         # AND its evolution-specific instructions on top, instead of one
         # overwriting the other.
         review_agent.extra_system_suffix = EVOLUTION_SYSTEM_PROMPT
+        review_agent._current_user_id = user_id
+        if user_id:
+            review_agent.extra_system_suffix += (
+                "\n\nThis review is user-scoped. Write personal memory only under "
+                f"memory/users/{user_id}/ and never read or modify another user's tree."
+            )
 
         logger.info(
             f"[Evolution] backup {backup_id} ({_backup_n} files) → running review agent"
         )
         user_msg = build_review_user_message(transcript, protected_skills=list(protected_names))
-        result = review_agent.run_stream(user_msg, clear_history=True)
+        from common.runtime_identity import RuntimeIdentity, use_identity
+        with use_identity(RuntimeIdentity(
+            agent_id=agent_id, user_id=user_id, session_id=session_id
+        )):
+            result = review_agent.run_stream(user_msg, clear_history=True)
         result = (result or "").strip()
 
         # These messages are now reviewed; advance the cursor so the next pass

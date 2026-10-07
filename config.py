@@ -194,6 +194,7 @@ available_setting = {
     "wechat_kf_token": "",  # WeChat Customer Service callback token
     "wechat_kf_port": 9888,  # WeChat Customer Service callback service port
     "wechat_kf_secret": "",  # WeChat Customer Service app secret
+    "wechat_kf_tenant_key": "",  # optional stable HMAC key for customer isolation (falls back to secret)
     "wechat_kf_aes_key": "",  # WeChat Customer Service callback aes_key
     "wechat_kf_cursor_path": "~/.wechat_kf_cursors.json",  # path for persisting the WeChat Customer Service sync_msg cursor
     # Feishu config
@@ -687,6 +688,7 @@ def load_config():
         "wechatcom_corp_id": "WECHATCOM_CORP_ID",
         "wechat_kf_corp_id": "WECHAT_KF_CORP_ID",
         "wechat_kf_secret": "WECHAT_KF_SECRET",
+        "wechat_kf_tenant_key": "WECHAT_KF_TENANT_KEY",
         "wechat_kf_token": "WECHAT_KF_TOKEN",
         "wechat_kf_aes_key": "WECHAT_KF_AES_KEY",
         "qq_app_id": "QQ_APP_ID",

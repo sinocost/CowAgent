@@ -150,6 +150,7 @@ def _scan_once(agent_bridge, cfg) -> None:
                 agent_id=agent_id,
                 channel_type=channel_type,
                 receiver=receiver,
+                user_id=getattr(agent, "_current_user_id", None),
                 idle_minutes=(now - last_active) / 60 if last_active > 0 else 0.0,
             )
         except Exception as e:

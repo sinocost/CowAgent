@@ -136,14 +136,23 @@ class AgentInitializer:
         self._load_env_file()
         
         # Initialize workspace
-        from agent.prompt import ensure_workspace, load_context_files, PromptBuilder
+        from agent.prompt import (
+            PromptBuilder,
+            ensure_user_context_files,
+            ensure_workspace,
+            load_context_files,
+        )
         ensure_workspace(workspace_root, create_templates=True)
+        if identity.user_id:
+            ensure_user_context_files(workspace_root, identity.user_id)
         
         if session_id is None:
             logger.info(f"[AgentInitializer] Workspace initialized at: {workspace_root}")
         
         # Setup memory system
-        memory_manager, memory_tools = self._setup_memory_system(workspace_root, session_id)
+        memory_manager, memory_tools = self._setup_memory_system(
+            workspace_root, session_id, user_id=identity.user_id
+        )
         
         # Load tools
         tools = self._load_tools(
@@ -213,6 +222,7 @@ class AgentInitializer:
                 memory_manager.flush_manager.llm_model = agent.model
 
         agent.agent_id = profile.id
+        agent._current_user_id = identity.user_id
         agent.agent_profile = profile
         agent.workspace_dir = workspace_root
 
@@ -821,7 +831,12 @@ class AgentInitializer:
             except Exception as e:
                 logger.warning(f"[AgentInitializer] Failed to load .env file: {e}")
     
-    def _setup_memory_system(self, workspace_root: str, session_id: Optional[str] = None):
+    def _setup_memory_system(
+        self,
+        workspace_root: str,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ):
         """
         Setup memory system
         
@@ -853,8 +868,8 @@ class AgentInitializer:
             self._sync_memory(memory_manager, session_id)
 
             memory_tools = [
-                MemorySearchTool(memory_manager),
-                MemoryGetTool(memory_manager)
+                MemorySearchTool(memory_manager, user_id=user_id),
+                MemoryGetTool(memory_manager, user_id=user_id)
             ]
             
             if session_id is None:
@@ -1303,14 +1318,17 @@ class AgentInitializer:
             try:
                 if not agent.memory_manager:
                     continue
+                user_id = getattr(agent, "_current_user_id", None)
                 dream_candidates.setdefault(
-                    agent.agent_id, agent.memory_manager.flush_manager
+                    (agent.agent_id, user_id), agent.memory_manager.flush_manager
                 )
                 with agent.messages_lock:
                     messages = list(agent.messages)
                 if not messages:
                     continue
-                result = agent.memory_manager.flush_manager.create_daily_summary(messages)
+                result = agent.memory_manager.flush_manager.create_daily_summary(
+                    messages, user_id=user_id
+                )
                 if result:
                     flushed += 1
                     t = agent.memory_manager.flush_manager._last_flush_thread
@@ -1327,9 +1345,9 @@ class AgentInitializer:
             t.join(timeout=60)
 
         # Phase 2: Deep Dream — distill daily memories → MEMORY.md + dream diary
-        for agent_id, dream_candidate in dream_candidates.items():
+        for (agent_id, user_id), dream_candidate in dream_candidates.items():
             try:
-                result = dream_candidate.deep_dream()
+                result = dream_candidate.deep_dream(user_id=user_id)
                 if result:
                     logger.info(
                         f"[DeepDream] Memory distillation completed for "

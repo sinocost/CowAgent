@@ -91,6 +91,7 @@ class ChannelsHandler:
             "fields": [
                 {"key": "wechat_kf_corp_id", "label": "Corp ID", "type": "text"},
                 {"key": "wechat_kf_secret", "label": "Secret", "type": "secret"},
+                {"key": "wechat_kf_tenant_key", "label": "Tenant isolation key", "type": "secret"},
                 {"key": "wechat_kf_token", "label": "Token", "type": "secret"},
                 {"key": "wechat_kf_aes_key", "label": "AES Key", "type": "secret"},
                 {"key": "wechat_kf_port", "label": "Port", "type": "number", "default": 9888},

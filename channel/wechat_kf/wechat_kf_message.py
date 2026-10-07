@@ -15,12 +15,23 @@ from common.media_download import MAX_FILE_BYTES, MAX_IMAGE_BYTES, save_response
 from common import state_dir
 
 
-def _get_tmp_dir() -> str:
+def _get_tmp_dir(storage_scope: str = "") -> str:
     """Save under agent_workspace/tmp/ so agent tools (e.g. `read`) can
     resolve a relative path like `tmp/xxx.pdf` against their own
     workspace root. Mirrors the convention used by weixin / wecom_bot.
     """
-    return str(state_dir.tmp_dir())
+    root = state_dir.tmp_dir()
+    if storage_scope:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", storage_scope):
+            raise ValueError("invalid WeChat customer storage scope")
+        root = root / storage_scope
+        root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
+def _scoped_tmp_dir(storage_scope: str) -> str:
+    """Keep the legacy zero-argument hook for tests and channel extensions."""
+    return _get_tmp_dir(storage_scope) if storage_scope else _get_tmp_dir()
 
 
 def _extract_filename(content_disposition: str) -> str:
@@ -57,7 +68,13 @@ class WechatKfMessage(ChatMessage):
         }
     """
 
-    def __init__(self, msg: dict, client: WeChatClient = None, is_group: bool = False):
+    def __init__(
+        self,
+        msg: dict,
+        client: WeChatClient = None,
+        is_group: bool = False,
+        storage_scope: str = "",
+    ):
         # NOTE: skip parent constructor because it expects a wechatpy parsed
         # message object, while here we receive a raw dict from sync_msg.
         super().__init__(msg)
@@ -75,7 +92,7 @@ class WechatKfMessage(ChatMessage):
         elif self.msgtype == "image":
             self.ctype = ContextType.IMAGE
             media_id = msg.get("image", {}).get("media_id", "")
-            self.content = os.path.join(_get_tmp_dir(), media_id + ".jpg")
+            self.content = os.path.join(_scoped_tmp_dir(storage_scope), media_id + ".jpg")
 
             def download_image():
                 response = client.media.download(media_id)
@@ -92,7 +109,7 @@ class WechatKfMessage(ChatMessage):
             self.ctype = ContextType.VOICE
             media_id = msg.get("voice", {}).get("media_id", "")
             # WeCom returns amr by default; downstream voice pipeline will convert.
-            self.content = os.path.join(_get_tmp_dir(), media_id + ".amr")
+            self.content = os.path.join(_scoped_tmp_dir(storage_scope), media_id + ".amr")
 
             def download_voice():
                 response = client.media.download(media_id)
@@ -110,7 +127,7 @@ class WechatKfMessage(ChatMessage):
             media_id = msg.get("file", {}).get("media_id", "")
             # Provisional path; rewritten in download_file() once we have
             # the original filename from Content-Disposition.
-            self.content = os.path.join(_get_tmp_dir(), media_id)
+            self.content = os.path.join(_scoped_tmp_dir(storage_scope), media_id)
 
             def download_file():
                 response = client.media.download(media_id)
@@ -122,7 +139,7 @@ class WechatKfMessage(ChatMessage):
                     filename = safe_filename(
                         _extract_filename(response.headers.get("Content-Disposition", ""))
                     ) or media_id
-                    self.content = os.path.join(_get_tmp_dir(), filename)
+                    self.content = os.path.join(_scoped_tmp_dir(storage_scope), filename)
                     try:
                         save_response(response, self.content, MAX_FILE_BYTES)
                     except Exception as e:
