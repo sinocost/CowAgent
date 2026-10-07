@@ -35,8 +35,16 @@ from channel.chat_channel import ChatChannel
 from channel.file_cache import get_file_cache
 from channel.wechat_kf.wechat_kf_cursor_store import CursorStore
 from channel.wechat_kf.wechat_kf_message import WechatKfMessage
+from channel.wechat_kf.tenant_identity import (
+    TenantIdentityError,
+    delivery_binding,
+    matches_delivery_binding,
+    session_key,
+    user_key,
+)
 from common.log import logger
 from common.media_download import download_bytes
+from common.runtime_identity import RuntimeIdentity, use_identity
 from common.singleton import singleton
 from common.utils import (
     compress_imgfile,
@@ -71,6 +79,10 @@ class WechatKfChannel(ChatChannel):
         self.secret = conf().get("wechat_kf_secret")
         self.token = conf().get("wechat_kf_token")
         self.aes_key = conf().get("wechat_kf_aes_key")
+        # Optional dedicated key permits credential rotation without changing
+        # every user's internal identity.  Existing installs safely fall back
+        # to the channel secret.
+        self.tenant_key = conf().get("wechat_kf_tenant_key") or self.secret
         self._http_server = None
         logger.info(
             "[wechat_kf] Initializing WeCom customer-service channel, corp_id: {}".format(
@@ -160,16 +172,28 @@ class WechatKfChannel(ChatChannel):
             return None
 
     def send(self, reply: Reply, context: Context):
-        receiver = context["receiver"]
+        audit_id = context.get("session_id") or "proactive"
         msg = context.kwargs.get("msg")
-        external_userid = context.get("external_userid") or (msg.external_userid if msg else None)
-        open_kfid = context.get("open_kfid") or (msg.open_kfid if msg else None)
+        # Inbound replies are addressed exclusively from their original
+        # message.  Context overrides remain available only for proactive
+        # sends, where no inbound message exists.
+        if msg is not None and getattr(msg, "external_userid", None):
+            external_userid = msg.external_userid
+            open_kfid = getattr(msg, "open_kfid", None)
+        else:
+            external_userid = context.get("external_userid")
+            open_kfid = context.get("open_kfid")
 
         if not external_userid or not open_kfid:
-            logger.error(
-                "[wechat_kf] missing external_userid or open_kfid, cannot send: "
-                f"external_userid={external_userid}, open_kfid={open_kfid}"
-            )
+            logger.error("[wechat_kf] missing delivery target; cannot send")
+            return
+
+        binding = context.get("wechat_kf_delivery_binding")
+        if binding and not matches_delivery_binding(
+            self.tenant_key, binding, open_kfid, external_userid
+        ):
+            # Do not include either raw identifier in logs.
+            logger.error("[wechat_kf] outbound delivery binding mismatch; send blocked")
             return
 
         if reply.type in [ReplyType.TEXT, ReplyType.ERROR, ReplyType.INFO]:
@@ -183,7 +207,7 @@ class WechatKfChannel(ChatChannel):
                 self._send_text(external_userid, open_kfid, text)
                 if i != len(texts) - 1:
                     time.sleep(0.5)
-            logger.info("[wechat_kf] Do send text to {}: {}".format(receiver, reply_text))
+            logger.info("[wechat_kf] sent text, session=%s", audit_id)
 
         elif reply.type == ReplyType.VOICE:
             file_path = reply.content
@@ -220,7 +244,7 @@ class WechatKfChannel(ChatChannel):
             for media_id in media_ids:
                 self._send_voice(external_userid, open_kfid, media_id)
                 time.sleep(1)
-            logger.info("[wechat_kf] sendVoice={}, receiver={}".format(reply.content, receiver))
+            logger.info("[wechat_kf] sent voice, session=%s", audit_id)
 
         elif reply.type == ReplyType.IMAGE_URL:
             img_url = reply.content
@@ -238,7 +262,7 @@ class WechatKfChannel(ChatChannel):
                 logger.error("[wechat_kf] upload image failed: {}".format(e))
                 return
             self._send_image(external_userid, open_kfid, response["media_id"])
-            logger.info("[wechat_kf] sendImage url={}, receiver={}".format(img_url, receiver))
+            logger.info("[wechat_kf] sent image, session=%s", audit_id)
 
         elif reply.type == ReplyType.IMAGE:
             image_storage = reply.content
@@ -253,7 +277,7 @@ class WechatKfChannel(ChatChannel):
                 logger.error("[wechat_kf] upload image failed: {}".format(e))
                 return
             self._send_image(external_userid, open_kfid, response["media_id"])
-            logger.info("[wechat_kf] sendImage, receiver={}".format(receiver))
+            logger.info("[wechat_kf] sent image, session=%s", audit_id)
 
         # VIDEO is how ChatChannel hands over a locally generated video
         # (channel/chat_channel.py: Reply(ReplyType.VIDEO, "file://" + path)),
@@ -270,7 +294,7 @@ class WechatKfChannel(ChatChannel):
                 logger.error("[wechat_kf] upload video failed: {}".format(e))
                 return
             self._send_video(external_userid, open_kfid, response["media_id"])
-            logger.info("[wechat_kf] sendVideo url={}, receiver={}".format(video_url, receiver))
+            logger.info("[wechat_kf] sent video, session=%s", audit_id)
 
         elif reply.type == ReplyType.FILE:
             file_path = reply.content
@@ -290,7 +314,7 @@ class WechatKfChannel(ChatChannel):
                 logger.error("[wechat_kf] upload file failed: {}".format(e))
                 return
             self._send_file(external_userid, open_kfid, response["media_id"])
-            logger.info("[wechat_kf] sendFile={}, receiver={}".format(file_path, receiver))
+            logger.info("[wechat_kf] sent file, session=%s", audit_id)
 
         else:
             logger.warning("[wechat_kf] unsupported reply type: {}".format(reply.type))
@@ -352,12 +376,26 @@ class WechatKfChannel(ChatChannel):
         file_cache = get_file_cache()
         for raw in msgs:
             try:
-                kf_msg = WechatKfMessage(msg=raw, client=self.client)
+                raw_external_userid = raw.get("external_userid")
+                raw_open_kfid = raw.get("open_kfid") or open_kfid
+                tenant_user_id = user_key(
+                    self.tenant_key, self.corp_id, raw_open_kfid, raw_external_userid
+                )
+                session_id = session_key(
+                    self.tenant_key, self.corp_id, raw_open_kfid, raw_external_userid
+                )
+                target_binding = delivery_binding(
+                    self.tenant_key, raw_open_kfid, raw_external_userid
+                )
+                kf_msg = WechatKfMessage(
+                    msg=raw, client=self.client, storage_scope=session_id
+                )
             except NotImplementedError as e:
                 logger.debug("[wechat_kf] {}".format(e))
                 continue
-
-            session_id = kf_msg.from_user_id
+            except TenantIdentityError as e:
+                logger.error("[wechat_kf] cannot establish tenant boundary: %s", e)
+                continue
 
             # Cache lone images/files and wait for the user's follow-up
             # text. Agent mode never reads memory.USER_IMAGE_CACHE, so
@@ -365,7 +403,12 @@ class WechatKfChannel(ChatChannel):
             if kf_msg.ctype in (ContextType.IMAGE, ContextType.FILE):
                 ftype = "image" if kf_msg.ctype == ContextType.IMAGE else "file"
                 try:
-                    kf_msg.prepare()  # download to local tmp path
+                    # Attachment paths resolve under the same user boundary as
+                    # the later agent run instead of the shared Agent tmp dir.
+                    with use_identity(RuntimeIdentity(
+                        user_id=tenant_user_id, session_id=session_id
+                    )):
+                        kf_msg.prepare()  # download to local tmp path
                     file_cache.add(session_id, kf_msg.content, file_type=ftype)
                     logger.info(
                         "[wechat_kf] {} cached for session {}: {}".format(
@@ -401,6 +444,9 @@ class WechatKfChannel(ChatChannel):
                 msg=kf_msg,
             )
             if context:
+                context["user_id"] = tenant_user_id
+                context["session_id"] = session_id
+                context["wechat_kf_delivery_binding"] = target_binding
                 self.produce(context)
                 if clear_cached_files:
                     file_cache.clear(session_id)

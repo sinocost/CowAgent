@@ -67,6 +67,7 @@
 
   "wechat_kf_corp_id": "ww1234567890abcdef",
   "wechat_kf_secret": "<企微应用的 Secret>",
+  "wechat_kf_tenant_key": "<稳定的随机隔离密钥，可选但推荐>",
   "wechat_kf_token": "<接收消息 Token>",
   "wechat_kf_aes_key": "<EncodingAESKey>",
   "wechat_kf_port": 9888
@@ -77,6 +78,7 @@
 |---|---|
 | `wechat_kf_corp_id` | 企业 ID |
 | `wechat_kf_secret` | **绑定到微信客服**的那个企微自建应用的 Secret |
+| `wechat_kf_tenant_key` | 可选的稳定 HMAC 密钥，用于派生匿名客户身份；设置后轮换应用 Secret 不会改变客户记忆归属。启用后不要随意更换 |
 | `wechat_kf_token` | 该应用「接收消息」配置的 Token |
 | `wechat_kf_aes_key` | 该应用「接收消息」配置的 EncodingAESKey |
 | `wechat_kf_port` | 监听端口，默认 `9888` |

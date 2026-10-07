@@ -6,6 +6,7 @@ Initializes the workspace, creates template files, and loads context files.
 
 from __future__ import annotations
 import os
+import re
 from typing import List, Optional
 from dataclasses import dataclass
 
@@ -109,13 +110,37 @@ def ensure_workspace(workspace_dir: str, create_templates: bool = True) -> Works
     )
 
 
-def load_context_files(workspace_dir: str, files_to_load: Optional[List[str]] = None) -> List[ContextFile]:
+def ensure_user_context_files(workspace_dir: str, user_id: str) -> None:
+    """Create the private profile/memory files for one pseudonymous tenant.
+
+    The shared workspace templates remain the Agent operator's files and must
+    never be copied into a customer directory.
+    """
+    if not user_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", user_id):
+        raise ValueError("invalid user identity path component")
+    user_file = os.path.join(workspace_dir, "users", user_id, DEFAULT_USER_FILENAME)
+    memory_file = os.path.join(
+        workspace_dir, "memory", "users", user_id, DEFAULT_MEMORY_FILENAME
+    )
+    os.makedirs(os.path.dirname(user_file), exist_ok=True)
+    os.makedirs(os.path.dirname(memory_file), exist_ok=True)
+    _create_template_if_missing(user_file, _get_user_template())
+    _create_template_if_missing(memory_file, _get_memory_template())
+
+
+def load_context_files(
+    workspace_dir: str,
+    files_to_load: Optional[List[str]] = None,
+    user_id: Optional[str] = None,
+) -> List[ContextFile]:
     """
     Load the workspace context files.
 
     Args:
         workspace_dir: workspace directory
         files_to_load: list of files (relative paths) to load; if None, load all standard files
+        user_id: pseudonymous end-user owner. When present, USER.md and
+            MEMORY.md are loaded only from that user's private paths.
 
     Returns:
         A list of ContextFile objects.
@@ -130,10 +155,26 @@ def load_context_files(workspace_dir: str, files_to_load: Optional[List[str]] = 
             DEFAULT_BOOTSTRAP_FILENAME,  # Only exists when onboarding is incomplete
         ]
     
+    if user_id is None:
+        from common.runtime_identity import current_identity
+        user_id = current_identity().user_id
+
+    # Tenant ids are used as path components. Channel resolvers generate this
+    # restricted form; validate again at the filesystem boundary.
+    if user_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", user_id):
+        raise ValueError("invalid user identity path component")
+
     context_files = []
     
     for filename in files_to_load:
-        filepath = os.path.join(workspace_dir, filename)
+        display_path = filename
+        if user_id and filename == DEFAULT_USER_FILENAME:
+            display_path = os.path.join("users", user_id, DEFAULT_USER_FILENAME)
+        elif user_id and filename == DEFAULT_MEMORY_FILENAME:
+            display_path = os.path.join(
+                "memory", "users", user_id, DEFAULT_MEMORY_FILENAME
+            )
+        filepath = os.path.join(workspace_dir, display_path)
         
         if not os.path.exists(filepath):
             continue
@@ -162,7 +203,7 @@ def load_context_files(workspace_dir: str, files_to_load: Optional[List[str]] = 
                 content = _truncate_memory_content(content)
             
             context_files.append(ContextFile(
-                path=filename,
+                path=display_path.replace(os.sep, "/"),
                 content=content
             ))
             
@@ -752,4 +793,3 @@ def _get_knowledge_index_template() -> str:
 def _get_knowledge_log_template() -> str:
     """Knowledge wiki operation log template — empty file, agent fills it."""
     return ""
-

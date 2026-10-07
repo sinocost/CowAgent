@@ -4,7 +4,7 @@ Memory search tool
 Allows agents to search their memory using semantic and keyword search
 """
 
-from typing import Dict, Any, Optional
+from typing import Optional
 from agent.tools.base_tool import BaseTool
 
 
@@ -78,13 +78,26 @@ class MemorySearchTool(BaseTool):
         
         try:
             # Run async search in sync context
+            requested = max(1, int(max_results))
             results = asyncio.run(self.memory_manager.search(
                 query=query,
                 user_id=self.user_id,
-                max_results=max_results,
+                # Shared legacy memory can otherwise crowd user-owned results
+                # before the privacy filter below gets a chance to remove it.
+                max_results=max(requested * 4, 40) if self.user_id else requested,
                 min_score=min_score,
                 include_shared=True
             ))
+            if self.user_id:
+                # "shared" historically includes the Agent's MEMORY.md and
+                # daily summaries as well as public knowledge. Tenant sessions
+                # may read public knowledge, but never legacy/private memory
+                # without matching ownership.
+                results = [
+                    result for result in results
+                    if getattr(result, "user_id", None) == self.user_id
+                    or getattr(result, "source", None) == "knowledge"
+                ][:requested]
             
             if not results:
                 # Return clear message that no memories exist yet

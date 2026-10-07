@@ -465,10 +465,18 @@ def _build_memory_section(
     if not memory_manager:
         return []
 
-    # In project mode, memory files must be addressed absolutely under ~/cow.
+    # Tenant sessions write only into their pseudonymous private memory tree.
+    # In project mode every memory path is absolute so it cannot land in the
+    # opened project by accident.
+    from common.runtime_identity import current_identity
+    user_id = current_identity().user_id
     p = _state_path_prefix(workspace_dir, project_dir)
-    mem_md = f"{p}MEMORY.md"
-    mem_dir = f"{p}memory"
+    if user_id:
+        mem_dir = f"{p}memory/users/{user_id}"
+        mem_md = f"{mem_dir}/MEMORY.md"
+    else:
+        mem_md = f"{p}MEMORY.md"
+        mem_dir = f"{p}memory"
     kb_dir = _knowledge_base_path(workspace_dir, project_dir)
 
     has_memory_tools = False
@@ -748,9 +756,17 @@ def _build_workspace_section(
         ):
             normalized_project = project_dir
 
+    from common.runtime_identity import current_identity
+    user_id = current_identity().user_id
+    user_file = f"users/{user_id}/USER.md" if user_id else "USER.md"
+    memory_file = (
+        f"memory/users/{user_id}/MEMORY.md" if user_id else "MEMORY.md"
+    )
+
     if normalized_project:
         return _build_project_workspace_section(
-            workspace_dir, normalized_project, language, context_files_loaded
+            workspace_dir, normalized_project, language, context_files_loaded,
+            user_file=user_file, memory_file=memory_file,
         )
 
     if language == "en":
@@ -783,9 +799,9 @@ def _build_workspace_section(
                 "The following files are **already auto-loaded** into the system prompt at session start, so you **don't need to read them again with the read tool**:",
                 "",
                 "- ✅ `AGENT.md`: loaded - your persona and soul; follow it strictly. When your name, personality or style changes, proactively `edit` this file",
-                "- ✅ `USER.md`: loaded - the user's identity info. When the user changes how they're addressed, their name, etc., `edit` this file",
+                f"- ✅ `{user_file}`: loaded - the user's identity info. When the user changes how they're addressed, their name, etc., `edit` this file",
                 "- ✅ `RULE.md`: loaded - workspace guide and rules; follow them strictly",
-                "- ✅ `MEMORY.md`: loaded - long-term memory index",
+                f"- ✅ `{memory_file}`: loaded - long-term memory index",
                 "",
                 "**💬 Communication norms**:",
                 "",
@@ -826,9 +842,9 @@ def _build_workspace_section(
                 "以下文件在会话启动时**已经自动加载**到系统提示词中，你**无需再用 read 工具读取**：",
                 "",
                 "- ✅ `AGENT.md`: 已加载 - 你的人格和灵魂设定，请严格遵循。当你的名字、性格或交流风格发生变化时，主动用 `edit` 更新此文件",
-                "- ✅ `USER.md`: 已加载 - 用户的身份信息。当用户修改称呼、姓名等身份信息时，用 `edit` 更新此文件",
+                f"- ✅ `{user_file}`: 已加载 - 用户的身份信息。当用户修改称呼、姓名等身份信息时，用 `edit` 更新此文件",
                 "- ✅ `RULE.md`: 已加载 - 工作空间使用指南和规则，请严格遵循",
-                "- ✅ `MEMORY.md`: 已加载 - 长期记忆索引",
+                f"- ✅ `{memory_file}`: 已加载 - 长期记忆索引",
                 "",
                 "**💬 交流规范**:",
                 "",
@@ -849,7 +865,12 @@ def _build_workspace_section(
 
 
 def _build_project_workspace_section(
-    workspace_dir: str, project_dir: str, language: str, context_files_loaded: bool
+    workspace_dir: str,
+    project_dir: str,
+    language: str,
+    context_files_loaded: bool,
+    user_file: str = "USER.md",
+    memory_file: str = "MEMORY.md",
 ) -> List[str]:
     """Workspace section for a session pointed at a project directory.
 
@@ -874,7 +895,7 @@ def _build_project_workspace_section(
             f"   - ✅ relative `output/report.html` → `{project_dir}/output/report.html`",
             "",
             f"2. **Memory and skills stay in the system directory** `{workspace_dir}`. Never write them into the project. Memory tools handle this for you; if you ever touch these files directly, use **absolute paths** under the system directory.",
-            f"   - ✅ absolute `{workspace_dir}/MEMORY.md`",
+            f"   - ✅ absolute `{workspace_dir}/{memory_file}`",
             "   - ❌ relative `MEMORY.md` (that would land in the project, which is wrong)",
             "",
             "3. **Accessing any other directory**: use absolute paths.",
@@ -897,7 +918,7 @@ def _build_project_workspace_section(
             f"   - ✅ 相对路径 `output/report.html` → `{project_dir}/output/report.html`",
             "",
             f"2. **记忆和技能仍在系统目录** `{workspace_dir}`，不要写入项目目录。记忆操作由记忆工具自动完成；若确需直接访问这些文件，请使用系统目录下的**绝对路径**。",
-            f"   - ✅ 绝对路径 `{workspace_dir}/MEMORY.md`",
+            f"   - ✅ 绝对路径 `{workspace_dir}/{memory_file}`",
             "   - ❌ 相对路径 `MEMORY.md`（那会落到项目目录里，是错误的）",
             "",
             "3. **访问其他任意目录**：使用绝对路径。",
@@ -909,12 +930,12 @@ def _build_project_workspace_section(
     if context_files_loaded:
         if language == "en":
             lines += [
-                "**Files already auto-loaded** (no need to `read` again): `AGENT.md`, `USER.md`, `RULE.md`, `MEMORY.md` (from the system directory).",
+                f"**Files already auto-loaded** (no need to `read` again): `AGENT.md`, `{user_file}`, `RULE.md`, `{memory_file}` (from the system directory).",
                 "",
             ]
         else:
             lines += [
-                "**已自动加载的文件**（无需再次 `read`）：`AGENT.md`、`USER.md`、`RULE.md`、`MEMORY.md`（来自系统目录）。",
+                f"**已自动加载的文件**（无需再次 `read`）：`AGENT.md`、`{user_file}`、`RULE.md`、`{memory_file}`（来自系统目录）。",
                 "",
             ]
 

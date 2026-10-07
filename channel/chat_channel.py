@@ -217,6 +217,10 @@ class ChatChannel(Channel):
         """
         return RuntimeIdentity(
             agent_id=context.get("agent_id"),
+            # Channels that implement tenant isolation resolve a pseudonymous
+            # owner at ingress.  Never infer this from receiver/session here:
+            # those values may be raw delivery addresses or group ids.
+            user_id=context.get("user_id"),
             session_id=context.get("session_id"),
         )
 

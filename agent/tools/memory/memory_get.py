@@ -5,6 +5,7 @@ Allows agents to read specific sections from memory files
 """
 
 import os
+from typing import Optional
 
 from agent.tools.base_tool import BaseTool
 from agent.tools.utils.credentials import DENIED_MESSAGE, is_credential_path
@@ -38,7 +39,7 @@ class MemoryGetTool(BaseTool):
         "required": ["path"]
     }
     
-    def __init__(self, memory_manager):
+    def __init__(self, memory_manager, user_id: Optional[str] = None):
         """
         Initialize memory get tool
         
@@ -47,6 +48,7 @@ class MemoryGetTool(BaseTool):
         """
         super().__init__()
         self.memory_manager = memory_manager
+        self.user_id = user_id
 
         from config import conf
         if conf().get("knowledge", True):
@@ -73,7 +75,7 @@ class MemoryGetTool(BaseTool):
         """
         from agent.tools.base_tool import ToolResult
         
-        path = args.get("path")
+        path = str(args.get("path") or "").replace("\\", "/")
         start_line = args.get("start_line", 1)
         num_lines = args.get("num_lines")
         
@@ -83,6 +85,21 @@ class MemoryGetTool(BaseTool):
         try:
             workspace_dir = self.memory_manager.config.get_workspace()
             
+            if self.user_id:
+                private_prefix = f"memory/users/{self.user_id}/"
+                if path == "MEMORY.md":
+                    path = private_prefix + "MEMORY.md"
+                elif path.startswith("knowledge/"):
+                    pass
+                elif path.startswith(private_prefix):
+                    pass
+                elif not path.startswith("/") and "/" not in path:
+                    path = private_prefix + path
+                else:
+                    return ToolResult.fail(
+                        "Error: Access denied: memory belongs to another scope"
+                    )
+
             # Auto-prepend memory/ if not present and not absolute path
             # Exceptions: MEMORY.md in root, knowledge/ files at workspace root
             if not path.startswith('memory/') and not path.startswith('knowledge/') and not path.startswith('/') and path != 'MEMORY.md':
@@ -100,9 +117,15 @@ class MemoryGetTool(BaseTool):
                 from common import state_dir
                 knowledge_root = state_dir.knowledge_dir(base=workspace_dir)
                 file_path = (knowledge_root / path[len('knowledge/'):]).resolve()
-                allowed_roots.append(knowledge_root)
+                # A knowledge-prefixed traversal must not become a back door to
+                # MEMORY.md or another workspace file.
+                allowed_roots = [knowledge_root]
             else:
                 file_path = (workspace_dir / path).resolve()
+                if self.user_id:
+                    allowed_roots = [
+                        workspace_dir / "memory" / "users" / self.user_id
+                    ]
 
             # Use os.path.realpath + os.sep for cross-platform path validation.
             # str(Path).startswith(str + '/') fails on Windows where Path uses

@@ -2,14 +2,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from bridge.context import ContextType
+from bridge.context import Context, ContextType
 from channel.wechat_kf import wechat_kf_channel
+from channel.wechat_kf.tenant_identity import session_key
 
 
 class FakeMessage:
-    def __init__(self, msg, client):
+    def __init__(self, msg, client, storage_scope=""):
         self.ctype = ContextType.TEXT
         self.from_user_id = msg["external_userid"]
+        self.external_userid = msg["external_userid"]
+        self.open_kfid = msg.get("open_kfid", "kf-1")
         self.content = msg["text"]["content"]
 
 
@@ -17,10 +20,14 @@ def make_channel(monkeypatch, pages):
     channel_class = wechat_kf_channel.WechatKfChannel.__wrapped__
     channel = channel_class.__new__(channel_class)
     channel.client = Mock()
+    channel.corp_id = "corp-1"
+    channel.tenant_key = "tenant-key"
     channel.cursor_store = Mock()
     channel.cursor_store.get.return_value = "cursor-before"
     channel._call_sync_msg = Mock(side_effect=pages)
-    channel._compose_context = Mock(return_value=object())
+    channel._compose_context = Mock(
+        return_value=Context(ContextType.TEXT, "hello", {"receiver": "user-1"})
+    )
     channel.produce = Mock()
     monkeypatch.setattr(wechat_kf_channel, "WechatKfMessage", FakeMessage)
     monkeypatch.setattr(wechat_kf_channel, "get_file_cache", lambda: Mock(get=lambda *_: []))
@@ -94,7 +101,9 @@ def test_pending_attachments_clear_after_successful_delivery(monkeypatch):
 
     channel.consume_callback("token", "kf-1")
 
-    file_cache.clear.assert_called_once_with("user-1")
+    file_cache.clear.assert_called_once_with(
+        session_key("tenant-key", "corp-1", "kf-1", "user-1")
+    )
     channel.cursor_store.set.assert_called_once_with("kf-1", "cursor-after")
 
 
